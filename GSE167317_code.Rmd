@@ -1,0 +1,1903 @@
+---
+title: "Analysis_GSE167317"
+subtitle: "Dataset: Quantitative Time-Lapse Imaging & scRNA-Seq"
+author: "Natalia Silva Morosini"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+---
+
+# **PART 1 - Required Packages**
+
+First, check the Seurat version to ensure that you begin the analysis using a version < 5.0, as this is a requirement 
+of one of the steps. Please consult the README.txt file for more details.
+
+## Setup
+
+```{r setup, warning=FALSE, message=FALSE, eval=FALSE}
+library(here)
+library(patchwork)
+library(rtracklayer)
+library(R.utils)
+
+library(SingleCellExperiment)
+library(GenomicRanges)
+library(Seurat.utils)
+library(Seurat)
+library(scCustomize)
+
+library(dplyr)
+library(reshape2)
+library(ggrepel)
+library(dendextend)
+library(ggplot2)
+library(tidyverse)
+library(gridExtra)
+library(gridtext)
+library(grid)
+
+library(pheatmap)
+library(ComplexHeatmap)
+library(cowplot)
+library(RColorBrewer)
+library(ggcorrplot)
+library(corrplot)
+library(paletteer)
+library(viridis)
+library(scales)
+library(cetcolor)
+library(plotrix)
+library(DOSE)
+library(GOSemSim)
+
+library(limma)
+library(edgeR)
+library(DESeq2)
+library(DEsingle)
+library(SeuratDisk)
+
+library(org.Mm.eg.db)
+library(monocle3)
+library(msigdbr)
+library(clusterProfiler)
+library(AnnotationDbi)
+library(circlize)
+
+if (!dir.exists("paper_info")) 
+  dir.create("paper_info")
+
+if (!dir.exists("rda")) 
+  dir.create("rda")
+
+if (!dir.exists("plots")) 
+  dir.create("plots")
+
+if (!dir.exists("csv")) 
+  dir.create("csv")
+
+if (!dir.exists("gencode")) 
+  dir.create("gencode")
+```
+
+# **PART 2 - Loading Metadata**
+
+Only proceed with cells that passed Quaity Control (QC): provided by the authors.
+
+```{r metadata, warning=FALSE, eval=FALSE}
+# Metadata
+Metadata_Seq5=read.csv(paste0('paper_info/PickedCells_Sequenced_Seq5.csv'),
+                       header = T,stringsAsFactors = F)
+Metadata_Seq5$cDNAID=paste0('Seq5_',Metadata_Seq5$cDNAID)
+Metadata_Seq5=Metadata_Seq5[!is.na(Metadata_Seq5$TrackNumber),]
+Metadata_Seq4=read.csv(paste0('paper_info/PickedCells_Sequenced_Seq4.csv'),
+                       header = T,stringsAsFactors = F)
+Metadata_Seq4$cDNAID=paste0('Seq4_',Metadata_Seq4$cDNAID)
+
+Metadata_Seq5$SeqRun='Seq5'
+Metadata_Seq4$SeqRun='Seq4'
+
+Metadata=rbind(Metadata_Seq4,Metadata_Seq5)
+
+Seq5=read.csv(paste0('paper_info/CellNames_SistersPicked_TheFilter_Seq5.csv'),
+              header = F, stringsAsFactors = F)$V2
+Seq4=read.csv(paste0('paper_info/CellNames_SistersPicked_TheFilter_Seq4.csv'),
+              header = F, stringsAsFactors = F)$V2
+
+Metadata = Metadata[Metadata$cDNAID%in%c(Seq5,Seq4),]
+
+# Log All Counts
+log_AllCounts <- read.csv(paste0('paper_info/LogAllCounts.csv'),header = T,stringsAsFactors = F)
+rownames(log_AllCounts) <- log_AllCounts$X
+log_AllCounts$X <- NULL
+log_AllCounts <- t(log_AllCounts)
+log_AllCounts = log_AllCounts[,Metadata$cDNAID]
+
+rownames(Metadata) <- Metadata$cDNAID
+```
+
+# **PART 3 - Adding Important Information**
+
+```{r add-info, warning=FALSE, eval=FALSE}
+# Seurat Cell Cycle Phases
+load(file = paste0('paper_info/OutputCellCycle_Seurat.RData'))
+CCPhases=marrow$Phase
+Metadata$CCPhase=CCPhases[Metadata$cDNAID]
+Metadata$G2Mscore=marrow$G2M.Score[Metadata$cDNAID]
+Metadata$Sscore=marrow$S.Score[Metadata$cDNAID]
+Metadata$TimesinceDiv_inhours=(Metadata$TimeofPicking-Metadata$TimeofMotherDivision)/2
+
+PseudoTime = read.csv(paste0('paper_info/PseudoTime.csv'), stringsAsFactors = F, 
+                      header = T)
+rownames(PseudoTime) = PseudoTime$cDNAID
+Metadata$PseudoTime = PseudoTime[Metadata$cDNAID,'PseudoTime']
+
+# Account for Time Passed During Picking
+Experiments = c('Exp60','Exp68','Exp69','Exp72','Exp73','Exp74','Exp75','Exp76','Exp77')
+
+Pickings=list()
+
+for(experiment in Experiments){
+  df              = read.csv(paste0('paper_info/Pickingdata/',experiment,'.csv'),
+                             header=T, stringsAsFactors = F, sep = ';')
+  df$Experiment   = experiment
+  df$PickTimeDiff_inh = NA
+  for(i in 1:dim(df)[1]){
+    
+    #For Exp75, the first two entries are '' because picking failed
+    if(experiment == 'Exp75'){
+      df$PickTimeDiff_inh[i] = difftime(time1 = strptime(df$PickDate[i],"%d.%m.%Y %H:%M:%S"),time2 = strptime(df$PickDate[3],"%d.%m.%Y %H:%M:%S"),units = 'h')
+    }
+    else{
+      df$PickTimeDiff_inh[i] = difftime(time1 = strptime(df$PickDate[i],"%d.%m.%Y %H:%M:%S"),time2 = strptime(df$PickDate[1],"%d.%m.%Y %H:%M:%S"),units = 'h')
+    }
+  }
+  Pickings[[experiment]] = df
+}
+
+Pickings = do.call(rbind,Pickings)
+Pickings = Pickings[,c('Experiment','DestinationWell','PickTimeDiff_inh')]
+
+WellID          = Pickings$DestinationWell
+WellID_Letters  = unlist(lapply(WellID,function(x) unlist(strsplit(x, split = '-'))[1]))
+WellID_Idx      = unlist(lapply(WellID,function(x) as.integer(unlist(strsplit(x, split = '-'))[2])))
+WellID          = paste0(WellID_Letters,WellID_Idx)
+Pickings$CellID = paste0(Pickings$Experiment,'_',WellID)
+
+Metadata$TimesinceDiv_inhours_PlusPickingTime = NA
+rownames(Metadata)= Metadata$CellID
+
+for(cellID in Metadata$CellID){
+  PickingEntry=Pickings[Pickings$CellID==cellID, 'PickTimeDiff_inh']  
+  Metadata[cellID,'TimesinceDiv_inhours_PlusPickingTime'] = Metadata[cellID,'TimesinceDiv_inhours']+
+    max(PickingEntry) + 1
+}
+
+Metadata$TimesinceDiv_inhours = Metadata$TimesinceDiv_inhours_PlusPickingTime
+Metadata=Metadata[,-grep(x = colnames(Metadata),pattern = 'TimesinceDiv_inhours_PlusPickingTime')]
+
+Metadata=Metadata[!is.na(Metadata$TreeID),]
+
+# Match Sisters 
+PairedMetadata_LysoBrite_norm_Mean=NA
+PairedMetadata_LysoBrite_norm_Mother=NA
+PairedMetadata_LysoBrite_Diff_norm=NA
+
+Metadata$BothDaughtersSequenced=F
+TreesWithBothDaughtersSequenced=c()
+for(tree in unique(Metadata$TreeID)){
+  if(sum(Metadata$TreeID==tree)==2){
+    if(sum(Metadata$cDNAID[Metadata$TreeID==tree]%in%c(Seq5,Seq4))==2){
+      TreesWithBothDaughtersSequenced=c(TreesWithBothDaughtersSequenced,tree)
+      Metadata$BothDaughtersSequenced[Metadata$TreeID==tree]=T
+    }
+  }
+}
+
+Metadata_filtered <- Metadata[Metadata$BothDaughtersSequenced == TRUE, ]
+```
+
+# **PART 4 - Loading Matrix and Metadata Individually**
+
+```{r matrix, warning=FALSE, eval=FALSE}
+matrix4 <- read.csv(paste0("paper_info/matrix_seq4.csv"),header = T,stringsAsFactors = F)
+rownames(matrix4) <- matrix4$Geneid
+matrix4$X <- NULL
+matrix4$Geneid <- NULL
+meta4 <- read.csv(paste0("paper_info/metadata_seq4.csv"),header = T,stringsAsFactors = F)
+meta4 <- meta4[, c(2:7)]
+meta4$ShortID <- str_extract(
+  meta4$FastQNames,
+  "[A-H][0-9]+_Plate[0-9]+_Seq[0-9]+"
+)
+
+meta4$ID <- str_replace(
+  meta4$ShortID,
+  "([A-H][0-9]+)_Plate([0-9]+)_Seq([0-9]+)",
+  "Seq\\3_\\1_PLATE\\2"
+)
+
+matrix5 <- read.csv(paste0("paper_info/matrix_seq5.csv"),header = T,stringsAsFactors = F)
+rownames(matrix5) <- matrix5$X
+matrix5$X <- NULL
+meta5 <- read.csv(paste0("paper_info/metadata_seq5.csv"),header = T,stringsAsFactors = F)
+meta5 <- meta5[, c(2:7)]
+meta5$ShortID <- str_extract(
+  meta5$FastQNames,
+  "[A-H][0-9]+_Plate[0-9]+_Seq[0-9]+"
+)
+
+meta5$ID <- str_replace(
+  meta5$ShortID,
+  "([A-H][0-9]+)_Plate([0-9]+)_Seq([0-9]+)",
+  "Seq\\3_\\1_PLATE\\2"
+)
+
+meta <- rbind(meta4, meta5)
+
+meta <- meta[meta$ID %in% Metadata_filtered$cDNAID,] 
+
+# Relabeling Matrixes
+
+## Matrix 4
+colnames(matrix4) <- str_extract(
+  colnames(matrix4),
+  "[A-H][0-9]+_Plate[0-9]+_Seq[0-9]+"
+)
+colnames(matrix4) <- str_replace(
+  colnames(matrix4),
+  "([A-H][0-9]+)_Plate([0-9]+)_Seq([0-9]+)",
+  "Seq\\3_\\1_PLATE\\2"
+)
+
+matrix4 <- matrix4[,colnames(matrix4) %in% meta$ID] #272
+
+map <- setNames(Metadata_filtered$TreeID_Cell, Metadata_filtered$cDNAID)
+cols_to_rename <- intersect(colnames(matrix4), names(map))
+colnames(matrix4)[match(cols_to_rename, colnames(matrix4))] <- map[cols_to_rename]
+
+## Matrix 5
+colnames(matrix5) <- str_extract(
+  colnames(matrix5),
+  "[A-H][0-9]+_Plate[0-9]+_Seq[0-9]+"
+)
+colnames(matrix5) <- str_replace(
+  colnames(matrix5),
+  "([A-H][0-9]+)_Plate([0-9]+)_Seq([0-9]+)",
+  "Seq\\3_\\1_PLATE\\2"
+)
+
+matrix5 <- matrix5[,colnames(matrix5) %in% meta$ID] 
+
+map <- setNames(Metadata_filtered$TreeID_Cell, Metadata_filtered$cDNAID)
+cols_to_rename <- intersect(colnames(matrix5), names(map))
+colnames(matrix5)[match(cols_to_rename, colnames(matrix5))] <- map[cols_to_rename]
+
+save(matrix4, matrix5, Metadata_filtered, meta, file="rda/counts_meta_adjusted.rda")
+```
+
+# **PART 5 - Creating Seurat Objects**
+
+```{r seurat, warning=FALSE, eval=FALSE}
+# Convert Genes ID into Gene Symbols
+load("gencode/gencodeM21.rda")
+
+## Matrix 4
+matrix4$genes <- rownames(matrix4)
+matrix4 <- matrix4[grep("+_PAR_+",matrix4$genes,invert=T),]
+aux <- strsplit(matrix4$genes, "\\." )
+aux <- unlist(lapply(aux, "[[", 1 )) 
+matrix4$genes <- aux
+rownames(matrix4) <- aux 
+
+matrix4[rownames(matrix4) %in% genes$Gene.ID, "genes"] <- genes$Gene.Name[genes$Gene.ID %in% rownames(matrix4)]
+matrix4 <- matrix4[!duplicated(matrix4$genes),] 
+matrix4 <- na.omit(matrix4) 
+rownames(matrix4) <- matrix4$genes
+matrix4$genes <- NULL
+
+## Matrix 5
+matrix5[rownames(matrix5) %in% genes$Gene.ID, "genes"] <- genes$Gene.Name[genes$Gene.ID %in% rownames(matrix5)]
+matrix5 <- matrix5[!duplicated(matrix5$genes),] 
+matrix5 <- na.omit(matrix5)
+rownames(matrix5) <- matrix5$genes
+matrix5$genes <- NULL
+
+x <- setdiff(rownames(matrix4), rownames(matrix5))
+matrix4 <- matrix4[!rownames(matrix4) %in% x,]
+
+Metadata_filtered <- Metadata_filtered[order(Metadata_filtered$TreeID),]
+
+Metadata_filtered$sister <- rep(paste0("Sister_", 1:203), each = 2)
+Metadata_filtered$pair <- rep(1:203, each = 2)
+
+matrix <- cbind(matrix4, matrix5)
+
+# Filtering Genes
+genes4 <- read.csv("paper_info/normalisedCounts_Seq4.csv", header = T,stringsAsFactors = F)
+genes5 <- read.csv("paper_info/normalisedCounts_Seq5.csv", header = T,stringsAsFactors = F)
+common <- intersect(rownames(genes4), rownames(genes5))
+
+genes4 <- genes4[common, ,drop = FALSE]
+genes5 <- genes5[common, ,drop = FALSE]
+
+keep <- unique(genes4$X, genes5$X)
+
+matrix <- matrix[rownames(matrix) %in% keep,]
+
+Metadata_filtered <- Metadata_filtered %>%
+  arrange(pair, TrackNumber) 
+
+matrix <- matrix[,Metadata_filtered$TreeID_Cell]
+
+save(matrix4, matrix5, matrix,Metadata_filtered, file="rda/matrix_adjusted.rda")
+
+# Creating Seurat Object
+obj <- CreateSeuratObject(
+  counts = matrix,
+  meta.data = Metadata_filtered
+)
+
+obj <- NormalizeData(obj)
+obj <- FindVariableFeatures(obj, selection.method = "vst")
+obj <- ScaleData(obj, features=rownames(obj))
+obj <- RunPCA(object = obj, features = VariableFeatures(object = obj))
+ElbowPlot(obj) #5
+obj <- FindNeighbors(object = obj, dims = 1:5)
+obj <- FindClusters(object = obj, resolution=0.3)
+obj <- RunUMAP(object = obj, dims= 1:5)
+
+DimPlot(obj, reduction = "umap", label = F)
+
+save(obj,file="rda/seurat.rda")
+
+# Extract Normalized Expression
+norm <- as.matrix(obj@assays$RNA$scale.data)
+
+save(norm, file="rda/norm_mat.rda")
+
+rm(list=ls())
+
+# Comparing Only Sisters (pairs)
+load("rda/norm_mat.rda")
+load("rda/matrix_adjusted.rda")
+rm(matrix4,matrix5)
+
+Metadata_filtered <- Metadata_filtered[,c(8,33,39,41,44,47,48)]
+
+Metadata_filtered <- Metadata_filtered %>%
+  group_by(pair) %>%
+  mutate(
+    symmetry_lys = ifelse(
+      all(LysosomeInheritanceLabel == "high") |
+        all(LysosomeInheritanceLabel == "low"),
+      "Symmetric", "Asymmetric"
+    )
+  ) %>%
+  ungroup()
+
+colnames(Metadata_filtered)[1] <- "Lysosome"
+
+norm <- norm[, Metadata_filtered$TreeID_Cell]
+
+# Correlation - Histogram
+meta <- Metadata_filtered[,c(3,7)]
+rownames(meta) <- NULL
+
+meta <- meta %>%
+  group_by(pair) %>%
+  mutate(cell_id = paste0("cell_", LETTERS[row_number()])) %>%
+  pivot_wider(names_from = cell_id, values_from = TreeID_Cell)
+
+pair_cor <- sapply(1:nrow(meta), function(i) {
+  cor(norm[, meta$cell_A[i]], norm[, meta$cell_B[i]], method="spearman")
+})
+
+meta <- cbind(meta, data.frame(corr = pair_cor))
+meta$sister <- paste0("Sister_", 1:203)
+meta$Lysosome <- "Asymetric"
+
+p <- ggplot(meta, aes(x = corr)) +
+  geom_histogram(aes(y = after_stat(density)),
+                 bins = 30, fill = "grey85", color = "black", alpha = 0.8) +
+  geom_density(color = "black", linewidth = 1, alpha = 0.6) +
+  geom_vline(xintercept = mean(meta$corr, na.rm = TRUE),
+             color = "red", linetype = "dashed", linewidth = 1.2) +
+  labs(
+    title = "Distribution of Sister-Cell Correlations",
+    x = "Spearman correlation",
+    y = "Density"
+  ) +
+  theme_minimal(base_size = 12)
+
+ggsave("plots/Histogram_Correlation.png", p, height=5.5, width=6.8, dpi=300)
+```
+
+# **PART 6 - Differential Matrix (Sister 1 minus Sister 2)**
+
+```{r diff-norm, warning=FALSE, eval=FALSE}
+# Normalized
+diff_norm <- sapply(1:nrow(meta), function(i) {
+  norm[, meta$cell_A[i]] - norm[, meta$cell_B[i]]
+})
+
+colnames(diff_norm) <- paste0("Sister_", meta$pair)
+
+save(diff_norm, file="rda/diffmat_norm.rda")
+
+# Raw Counts
+mat <- as.matrix(matrix)
+
+diff_matrix <- sapply(1:nrow(meta), function(i) {
+  mat[, meta$cell_A[i]] - mat[, meta$cell_B[i]]
+})
+
+colnames(diff_matrix) <- paste0("Sister_", meta$pair)
+
+pair_cor_raw <- sapply(1:nrow(meta), function(i) {
+  cor(mat[, meta$cell_A[i]], mat[, meta$cell_B[i]], method="spearman")
+})
+
+meta <- cbind(meta, data.frame(corr_counts = pair_cor_raw))
+
+save(meta, Metadata_filtered, file="rda/metadata.rda")
+save(diff_matrix, file="rda/diffmat_counts.rda")
+
+rm(list=ls())
+gc()
+```
+
+# **PART 7 - Target Pathways**
+
+```{r targets, warning=FALSE, eval=FALSE}
+# SRF_MRTF
+load("rda/diffmat_counts.rda")
+load("rda/metadata.rda")
+
+SRF_MRTF = c(
+  "Acta2", "Actb", "Actg1",
+  "Myh9", "Myh10",
+  "Myl9", "Myl12a",
+  "Actn1", "Vcl", "Tln1", "Flna", "Cfl1", "Pfn1",
+  "Itga5", "Itgb1", "Itga1", "Itga2", "Itga6", "Itgb3",
+  "Cdh1", "Cdh2",
+  "Rhoa", "Rac1", "Cdc42",
+  "Arpc1a", "Arpc2", "Arpc3",
+  "Wasf1", "Fmnl1", "Fmnl2",
+  "Col1a1", "Col1a2", "Col3a1", "Col5a1",
+  "Fn1", "Tnc", "Ctgf",
+  "Lamb1", "Lamc1",
+  "Mmp2", "Mmp9",
+  "Tagln", "Cnn1", "Myh11", "Mylk",
+  "Tpm1", "Tpm2",
+  "Klf2", "Klf4", "Klf5",
+  "Fos", "Junb",
+  "Cyr61", "Anln", "Cdkn1a")
+
+plot <- diff_matrix[rownames(diff_matrix) %in% SRF_MRTF,]
+
+anno <- data.frame(
+  Genes   = SRF_MRTF,
+  Pathway = rep(
+    c("SRF/MRTF"),
+    times = c(55)
+  ),
+  stringsAsFactors = FALSE
+)
+
+ha_avg <- HeatmapAnnotation(
+  Lysosome = meta$Lysosome,
+  col = list(
+    Lysosome = c("Asymetric" = "#F8766D")
+  ),
+  border = TRUE,
+  show_annotation_name = FALSE,     
+  annotation_height = unit(c(3, 3, 3), "mm")  
+)
+
+anno <- anno[order(anno$Pathway),]
+anno <- anno[anno$Genes %in% rownames(plot),]
+
+plot <- plot[anno$Genes,]
+
+pairs_vec <- meta$sister
+ord <- order(pairs_vec)
+pairs_ord <- pairs_vec[ord]
+pair_split <- factor(pairs_ord)
+
+row_mean <- rowMeans(plot, na.rm = TRUE)
+keep <- row_mean != 0.000000000 
+
+plot <- plot[keep, , drop = FALSE]
+
+remove <- c("Klf5","Tagln","Wasf1","Mmp9","Itga1","Lamb1","Col5a1","Myh11","Acta2","Klf4",
+            "Cdh1","Fos","Cdh2","Itga2","Col1a2","Tpm2","Myl9","Col3a1","Tnc","Cnn1","Col1a1","Cfl1")
+
+plot <- plot[!rownames(plot) %in% remove, , drop = FALSE]
+
+anno <- anno[anno$Genes %in% rownames(plot),]
+
+a <- Heatmap(plot,                    
+        name = "Difference of Counts",
+        show_column_names = TRUE,
+        column_names_rot = 90,                    
+        column_names_gp  = gpar(fontsize = 5), 
+        column_title = NULL,
+        cluster_columns = TRUE,
+        show_column_dend = FALSE,
+        show_row_names = TRUE,
+        row_names_gp = gpar(fontsize = 8),
+        row_title = NULL,
+        cluster_rows = TRUE,
+        show_row_dend = TRUE,
+        border = TRUE)
+
+png("plots/Heatmap_SRF_MRTF.png", width = 14, height = 12, units = "in", res = 300)
+draw(a)
+dev.off()
+
+# SRF_TCF
+SRF_TCF = c(
+  # Core transcription machinery
+  "Elk1","Elk3","Elk4",
+  # MAPK cascade (canonical ERK pathway)
+  "Hras","Kras","Nras",
+  "Araf","Braf","Raf1",
+  "Map2k1","Map2k2",
+  "Mapk1","Mapk3",
+  # Immediate early SRF–TCF target genes
+  "Fosl1",
+  "Jund",
+  "Atf3",
+  "Nr4a1","Nr4a2",
+  "Dusp1","Dusp5","Dusp6",
+  "Cyr61","Egr4",
+  # Feedback / transcriptional regulators
+  "Zfp36",
+  "Ier2","Ier3","Ier5",
+  "Gadd45b"
+)
+
+plot <- diff_matrix[rownames(diff_matrix) %in% SRF_TCF,]
+
+anno <- data.frame(
+  Genes   = SRF_TCF,
+  Pathway = rep(
+    c("SRF/TCF"),
+    times = c(28)
+  ),
+  stringsAsFactors = FALSE
+)
+
+anno <- anno[order(anno$Pathway),]
+anno <- anno[anno$Genes %in% rownames(plot),]
+
+plot <- plot[anno$Genes,]
+
+pairs_vec <- meta$sister
+ord <- order(pairs_vec)
+pairs_ord <- pairs_vec[ord]
+pair_split <- factor(pairs_ord)
+
+row_mean <- rowMeans(plot, na.rm = TRUE)
+keep <- row_mean != 0.000000000 
+plot <- plot[keep, , drop = FALSE]
+
+remove <- c("Atf3","Egr4")
+plot <- plot[!rownames(plot) %in% remove, , drop = FALSE]
+
+anno <- anno[anno$Genes %in% rownames(plot),]
+
+b <- Heatmap(plot,                    
+        name = "Difference of Counts",
+        show_column_names = TRUE,
+        column_names_rot = 90,                    
+        column_names_gp  = gpar(fontsize = 6.5), 
+        column_title = NULL,
+        cluster_columns = TRUE,
+        show_column_dend = FALSE,
+        show_row_names = TRUE,
+        row_names_gp = gpar(fontsize = 8),
+        row_title = NULL,
+        cluster_rows = TRUE,
+        show_row_dend = TRUE,
+        border = TRUE)
+
+png("plots/Heatmap_SRF_TCF.png", width = 14, height = 12, units = "in", res = 300)
+draw(b)
+dev.off()
+
+# YAP_TAZ
+YAP_TAZ = c(
+  "Ctgf", "Cyr61", "Ankrd1", "Tnc",
+  "Col1a1", "Col1a2", "Col5a1", "Col5a2",
+  "Fn1", "Itga6", "Itgb2",
+  "Ptk2", "Plod2", "Thbs1", "Lats2",
+  "Ccnd1", "Ccne1", "Myc", "Foxm1",
+  "Aurka", "Aurkb",
+  "Birc5", "Ube2c", "Plk1", "Cdk1",
+  "Mki67", "Spp1",
+  "Amotl2", "Arhgap29",
+  "Itga3", "Itga5", "Itga6",
+  "Vcl", "Pxn", "Fermt2", "Zeb1",
+  "Bcl2l1", "Mcl1", "Birc5", "Xiap", "Traf1",
+  "Slc2a1", "Pfkm", "Eno1", "Hk2",
+  "Slc7a5", "Slc1a5",
+  "Acly", "Hmgcr",
+  "Sox2", "Nanog", "Pou5f1",
+  "Cd44", "Prom1", "Aldh1a1",
+  "Angptl4", "Edn1", "Nrg1", "Vegfa")
+
+plot <- diff_matrix[rownames(diff_matrix) %in% YAP_TAZ,]
+
+anno <- data.frame(
+  Genes   = YAP_TAZ,
+  Pathway = rep(
+    c("YAP/TAZ"),
+    times = c(59)
+  ),
+  stringsAsFactors = FALSE
+)
+
+anno <- anno[order(anno$Pathway),]
+anno <- anno[anno$Genes %in% rownames(plot),]
+
+plot <- plot[anno$Genes,]
+
+pairs_vec <- meta$sister
+ord <- order(pairs_vec)
+pairs_ord <- pairs_vec[ord]
+pair_split <- factor(pairs_ord)
+
+row_mean <- rowMeans(plot, na.rm = TRUE)
+keep <- row_mean != 0.000000000 
+plot <- plot[keep, , drop = FALSE]
+
+remove <- c("Col1a2","Prom1","Nanog","Col5a1","Lats2","Col5a2","Nrg1","Fermt2",
+            "Edn1","Thbs1","Tnc","Ankrd1","Col1a1")
+
+plot <- plot[!rownames(plot) %in% remove, , drop =FALSE]
+
+anno <- anno[anno$Genes %in% rownames(plot),]
+
+c <- Heatmap(plot,                    
+        name = "Difference of Counts",
+        show_column_names = TRUE,
+        column_names_rot = 90,                    
+        column_names_gp  = gpar(fontsize = 6.5), 
+        column_title = NULL,
+        cluster_columns = TRUE,
+        show_column_dend = FALSE,
+        show_row_names = TRUE,
+        row_names_gp = gpar(fontsize = 8),
+        row_title = NULL,
+        cluster_rows = TRUE,
+        show_row_dend = TRUE,
+        border = TRUE)
+
+png("plots/Heatmap_YAP_TAZ.png", width = 14, height = 12, units = "in", res = 300)
+draw(c)
+dev.off()
+
+# TFEB_TFE3
+TFEB_TFE3 = c(
+  "Ctsa", "Ctsb", "Ctsd", "Ctsf", "Ctsh", "Ctsz", "Ctsl",
+  "Gba", "Galc", "Hexb", "Glb1",
+  "Lamp1", "Lamp2",
+  "Mcoln1",
+  "Slc11a2", "Slc38a9",
+  "Atp6v0c", "Atp6v0d1", "Atp6v1a", "Atp6v1b2", "Atp6v1h",
+  "Ulk1", "Ulk2",
+  "Becn1", "Atg14",
+  "Wipi1",
+  "Atg3", "Atg5", "Atg7", "Atg9b", "Atg12", "Atg16l1",
+  "Map1lc3b", "Gabarap", "Gabarapl1",
+  "Stx17", "Vamp8", "Rab7a",
+  "Sqstm1", "Nbr1", "Optn", "Fyco1", "Tax1bp1",
+  "Lipa", "Npc1", "Npc2", "Asah1", "Smpd1",
+  "Bnip3", "Bnip3l", "Fundc1",
+  "Ppargc1a", "Tfam",
+  "Hmox1", "Sod2", "Gpx4", "Sesn2",
+  "Slc15a4", "Slc36a1",
+  "Tmem55b", "Vamp7", "Snx14", "Rab27a")
+
+plot <- diff_matrix[rownames(diff_matrix) %in% TFEB_TFE3,]
+
+anno <- data.frame(
+  Genes   = TFEB_TFE3,
+  Pathway = rep(
+    c("TFEB/TFE3"),
+    times = c(63)
+  ),
+  stringsAsFactors = FALSE
+)
+
+anno <- anno[order(anno$Pathway),]
+anno <- anno[anno$Genes %in% rownames(plot),]
+
+plot <- plot[anno$Genes,]
+
+pairs_vec <- meta$sister
+ord <- order(pairs_vec)
+pairs_ord <- pairs_vec[ord]
+pair_split <- factor(pairs_ord)
+
+row_mean <- rowMeans(plot, na.rm = TRUE)
+keep <- row_mean != 0.000000000 
+plot <- plot[keep, , drop = FALSE]
+
+anno <- anno[anno$Genes %in% rownames(plot),]
+
+d <- Heatmap(plot,                    
+        name = "Difference of Counts",
+        show_column_names = TRUE,
+        column_names_rot = 90,                    
+        column_names_gp  = gpar(fontsize = 6.5), 
+        column_title = NULL,
+        cluster_columns = TRUE,
+        show_column_dend = FALSE,
+        show_row_names = TRUE,
+        row_names_gp = gpar(fontsize = 8),
+        row_title = NULL,
+        cluster_rows = TRUE,
+        show_row_dend = TRUE,
+        border = TRUE)
+
+png("plots/Heatmap_TFEB_TFE3.png", width = 14, height = 12, units = "in", res = 300)
+draw(d)
+dev.off()
+
+# Genes All Four Pathways
+genes <- data.frame(
+  Genes = c(SRF_MRTF, SRF_TCF, TFEB_TFE3, YAP_TAZ),
+  BP = rep(
+    c("SRF_MRTF", "SRF_TCF", "TFEB_TFE3", "YAP_TAZ"),
+    times = c(length(SRF_MRTF),
+              length(SRF_TCF),
+              length(TFEB_TFE3),
+              length(YAP_TAZ))
+  )
+)
+
+remove <- c("Klf5","Tagln","Wasf1","Mmp9","Itga1","Lamb1","Col5a1","Myh11","Acta2","Klf4",
+            "Cdh1","Fos","Cdh2","Itga2","Col1a2","Tpm2","Myl9","Col3a1","Tnc","Cnn1","Col1a1","Cfl1",
+            "Atf3","Egr4","Col1a2","Prom1","Nanog","Col5a1","Lats2","Col5a2","Nrg1","Fermt2",
+            "Edn1","Thbs1","Tnc","Ankrd1","Col1a1")
+
+genes <- genes[!genes$Genes %in% remove,] 
+
+dup <- duplicated(genes$Genes)
+genes$Genes[dup]
+
+genes <- genes[!duplicated(genes$Genes),] 
+
+save(genes, file="rda/targets.rda")
+
+rm(list=ls())
+```
+
+# **PART 8 - Getting the Reference Gene per Pathway**
+
+```{r ref-genes, warning=FALSE, eval=FALSE}
+load("rda/matrix_adjusted.rda")
+rm(matrix4,matrix5,Metadata_filtered)
+
+load("rda/metadata.rda")
+rm(Metadata_filtered)
+
+load("rda/targets.rda")
+
+mat <- matrix[genes$Genes,]
+mat <- na.omit(mat)
+
+row_mean <- rowMeans(mat, na.rm = TRUE)
+keep <- row_mean != 0.000000000 
+mat <- mat[keep, , drop = FALSE]
+
+percent_zero_df <- data.frame(
+  gene = rownames(mat),
+  percent_zero = rowSums(mat == 0) / ncol(mat) * 100
+)
+
+percent_zero_df <- percent_zero_df %>%
+  arrange(desc(percent_zero))
+
+percent_zero_df <- percent_zero_df[percent_zero_df$percent_zero > 76,]
+
+mat <- as.matrix(mat)
+
+diff <- sapply(1:nrow(meta), function(i) {
+  mat[, meta$cell_A[i]] - mat[, meta$cell_B[i]]
+})
+
+colnames(diff) <- paste0("Sister_", meta$pair)
+
+genes <- genes[genes$Genes %in% rownames(diff),]
+diff <- diff[rownames(diff) %in% genes$Genes,]
+x <- as.data.frame(diff)
+
+diff_long <- x %>%
+  tibble::rownames_to_column("gene") %>%
+  pivot_longer(
+    cols = starts_with("Sister_"),
+    names_to = "sister",
+    values_to = "diff_value"
+  ) %>%
+  left_join(genes, by = c("gene" = "Genes")) %>%
+  filter(!is.na(BP))
+
+references <- diff_long %>%
+  group_by(BP) %>%
+  slice_max(order_by = diff_value, n = 1, with_ties = FALSE) %>%
+  ungroup()
+
+write.table(mat, file = "csv/matrix_pathways_counts.csv", sep = "\t", row.names = TRUE, quote = FALSE)
+write.table(mat, file = "csv/matrix_total_counts.csv", sep = "\t", row.names = TRUE, quote = FALSE)
+
+rm(list=ls())
+gc()
+```
+
+# **PART 9 - Deciding Which Cell is Sister 1 and 2 Based on Lysosome Inheritance**
+
+```{r deciding-cells, warning=FALSE, eval=FALSE}
+load("rda/matrix_adjusted.rda")
+rm(matrix4,matrix5, Metadata_filtered)
+
+load("rda/metadata.rda")
+rm(meta)
+
+load("rda/targets.rda")
+genes <- genes[genes$BP == "SRF_MRTF",]
+
+mat <- matrix[genes$Genes,]
+meta <- Metadata_filtered
+
+# Sanity Check
+stopifnot(
+  is.data.frame(Metadata_filtered),
+  all(c("TreeID_Cell", "Lysosome") %in% colnames(Metadata_filtered)),
+  is.matrix(mat) || is.data.frame(mat),
+  all(c("Genes", "BP") %in% colnames(genes))
+)
+
+Metadata_filtered$TreeID_Cell <- trimws(as.character(Metadata_filtered$TreeID_Cell))
+colnames(mat) <- trimws(colnames(mat))
+
+# Build Sister-pair Lysosome-based Rename Map
+build_lysosome_mapping <- function(meta) {
+  
+  ids <- meta$TreeID_Cell
+  lys <- meta$Lysosome
+  
+  stopifnot(grepl("_(R|Y)$", ids) |> all())
+  
+  pair_id <- sub("_(R|Y)$", "", ids)
+  
+  # Identity mapping by default
+  mapping <- setNames(ids, ids)
+  
+  for (pid in unique(pair_id)) {
+    idx <- which(pair_id == pid)
+    if (length(idx) != 2) next
+    
+    l1 <- lys[idx[1]]
+    l2 <- lys[idx[2]]
+    if (!is.finite(l1) || !is.finite(l2)) next
+    
+    hi <- idx[ if (l1 >= l2) 1 else 2 ]
+    lo <- idx[ if (l1 >= l2) 2 else 1 ]
+    
+    mapping[ids[hi]] <- sub("_(R|Y)$", "_R", ids[hi])
+    mapping[ids[lo]] <- sub("_(R|Y)$", "_Y", ids[lo])
+  }
+  
+  mapping
+}
+
+rename_map <- build_lysosome_mapping(Metadata_filtered)
+
+# Renaming Metadata
+Metadata_filtered$TreeID_Cell <-
+  rename_map[ match(Metadata_filtered$TreeID_Cell, names(rename_map)) ]
+
+# Split Genes by BP
+genes_by_bp <- split(genes$Genes, genes$BP)
+
+mats <- lapply(genes_by_bp, function(g) {
+  mat[g, , drop = FALSE]
+})
+
+# Renaming Matrices
+rename_matrix_cols <- function(m, map) {
+  cn <- colnames(m)
+  idx <- match(cn, names(map))
+  
+  cn[!is.na(idx)] <- unname(map[idx[!is.na(idx)]])
+  colnames(m) <- cn
+  m
+}
+
+mats_swapped <- lapply(mats, rename_matrix_cols, map = rename_map)
+
+# Reordering Columns: R before Y per pair
+order_R_before_Y <- function(m) {
+  cn <- colnames(m)
+  
+  if (is.null(cn) || length(cn) <= 1)
+    return(m)
+  
+  stopifnot(grepl("_(R|Y)$", cn) |> all())
+  
+  pid <- sub("_(R|Y)$", "", cn)
+  suf <- ifelse(grepl("_R$", cn), 0, 1)
+  
+  ord <- order(pid, suf)
+  m[, ord, drop = FALSE]
+}
+
+mats_swapped <- lapply(mats_swapped, order_R_before_Y)
+
+# Validation
+check_lysosome_order <- function(meta) {
+  ids <- meta$TreeID_Cell
+  lys <- meta$Lysosome
+  pid <- sub("_(R|Y)$", "", ids)
+  
+  sapply(unique(pid), function(p) {
+    idx <- which(pid == p)
+    if (length(idx) != 2) return(NA)
+    
+    r <- idx[grepl("_R$", ids[idx])]
+    y <- idx[grepl("_Y$", ids[idx])]
+    
+    lys[r] >= lys[y]
+  }) |> table(useNA = "ifany")
+}
+
+check_lysosome_order(Metadata_filtered)
+
+list2env(mats_swapped, envir = .GlobalEnv)
+
+Metadata_filtered <- Metadata_filtered[
+  with(Metadata_filtered,
+       order(
+         sub("_(R|Y)$", "", TreeID_Cell),      
+         ifelse(grepl("_R$", TreeID_Cell), 0, 1)  
+       )
+  ),
+]
+
+meta <- Metadata_filtered[,c(3,7)]
+rownames(meta) <- NULL
+
+meta <- meta %>%
+  group_by(pair) %>%
+  mutate(cell_id = paste0("cell_", LETTERS[row_number()])) %>%
+  pivot_wider(names_from = cell_id, values_from = TreeID_Cell)
+
+save(SRF_MRTF,meta,Metadata_filtered, file="rda/mat_meta_ord_lys.rda")
+
+# Starting the analysis
+meta_updated <- Metadata_filtered
+rm(Metadata_filtered)
+
+capitalize_first <- function(s) {
+  first_letter <- toupper(substr(s, 1, 1))
+  rest_of_string <- substring(s, 2)
+  paste0(first_letter, rest_of_string)
+}
+
+meta_updated$LysosomeInheritanceLabel <- capitalize_first(meta_updated$LysosomeInheritanceLabel)
+
+meta_updated <- meta_updated %>%
+  mutate(
+    channel = case_when(
+      str_detect(TreeID_Cell, "_R$") ~ "R",
+      str_detect(TreeID_Cell, "_Y$") ~ "Y",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  group_by(pair) %>%
+  mutate(
+    Lys_R = LysosomeInheritanceLabel[channel == "R"][1],
+    Lys_Y = LysosomeInheritanceLabel[channel == "Y"][1],
+    Lys   = paste0(Lys_R, "/", Lys_Y)
+  ) %>%
+  ungroup() %>%
+  dplyr::select(-channel, -Lys_R, -Lys_Y)
+
+meta_updated <- meta_updated %>%
+  mutate(
+    channel = case_when(
+      str_detect(TreeID_Cell, "_R$") ~ "R",
+      str_detect(TreeID_Cell, "_Y$") ~ "Y",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  group_by(pair) %>%
+  mutate(
+    Cyc_R = CCPhase[channel == "R"][1],
+    Cyc_Y = CCPhase[channel == "Y"][1],
+    Cycle   = paste0(Cyc_R, "/", Cyc_Y)
+  ) %>%
+  ungroup() %>%
+  dplyr::select(-channel, -Cyc_R, -Cyc_Y)
+
+meta_updated <- meta_updated %>%
+  mutate(
+    channel = case_when(
+      str_detect(TreeID_Cell, "_R$") ~ "R",
+      str_detect(TreeID_Cell, "_Y$") ~ "Y",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  group_by(pair) %>%
+  mutate(
+    ratio_R = Lysosome[channel == "R"][1],
+    ratio_Y = Lysosome[channel == "Y"][1],
+    log2Ratio   = log2(ratio_R/ratio_Y)
+  ) %>%
+  ungroup() %>%
+  dplyr::select(-channel, -ratio_R, -ratio_Y)
+
+meta_updated <- meta_updated %>%
+  mutate(
+    Sym = case_when(
+      log2Ratio < -0.6              ~ "Asymmetric (negative_corr)",
+      log2Ratio >= -0.6 & log2Ratio <= 0.6 ~ "Symmetric",
+      log2Ratio > 0.6               ~ "Asymmetric (positive_corr)"
+    )
+  )
+
+table(meta_updated$Sym)
+
+diff_mrtf <- sapply(1:nrow(meta), function(i) {
+  SRF_MRTF[, meta$cell_A[i]] - SRF_MRTF[, meta$cell_B[i]]
+})
+
+meta$sister <- paste0("Sister_", meta$pair)
+colnames(diff_mrtf) <- meta$sister
+rownames(diff_mrtf) <- rownames(SRF_MRTF)
+
+diff_mrtf <- na.omit(diff_mrtf)
+
+#SRF_MRTF
+corra <- matrix(
+  ifelse(diff_mrtf > 0, "Positive",
+         ifelse(diff_mrtf < 0, "Negative", "No diff")),
+  nrow = nrow(diff_mrtf),
+  ncol = ncol(diff_mrtf),
+  dimnames = dimnames(diff_mrtf)
+)
+
+x <- as.data.frame(corra)
+
+a <- x %>%
+  pivot_longer(
+    cols = starts_with("Sister_"),
+    names_to = "sister",
+    values_to = "check"
+  )
+
+a <- a %>%
+  arrange(check)
+
+perc <- a %>%
+  count(sister,check) %>%
+  group_by(sister) %>%
+  mutate(Percentage = round(n * 100 / sum(n), 2)) %>%
+  mutate(sister_num = as.numeric(gsub("[^0-9]", "", sister))) %>%
+  arrange(sister_num) %>%
+  dplyr::select(-sister_num) %>%
+  ungroup()
+
+perc <- perc %>%
+  mutate(
+    check = factor(check, levels = c("Negative", "No diff", "Positive")),
+    score = case_when(
+      check == "Negative" ~ -Percentage,
+      check == "Positive" ~  Percentage,
+      TRUE                ~  0
+    )
+  ) %>%
+  group_by(sister) %>%
+  mutate(order_score = sum(score)) %>%
+  ungroup() %>%
+  mutate(
+    sister = fct_reorder(sister, order_score)
+  ) %>%
+  dplyr::select(-score, -order_score) %>%
+  arrange(sister)
+
+perc$check <- factor(perc$check, levels=c("Positive","Negative","No diff"))
+
+color <- c(
+  "Positive" = "red3",
+  "Negative" = "blue",
+  "No diff" = "gray85"
+)
+
+ggplot(perc, aes(fill=check, y=Percentage, x=sister)) + 
+  geom_bar(position="stack", stat="identity") +
+  scale_fill_manual(values = color, name = NULL) +
+  theme_classic()
+
+save(meta, meta_updated, diff_mrtf, file="rda/diff_mrtf_lys.rda")
+save(perc, file="rda/percent_corr_Lys.rda")
+
+write.table(diff_mrtf, file = "csv/matrix_diff_counts_mrtf_ord_lys.csv", sep = "\t", row.names = TRUE, quote = FALSE)
+
+rm(list=ls())
+
+load("rda/matrix_adjusted.rda")
+rm(matrix4,matrix5,Metadata_filtered)
+
+load("rda/diff_mrtf_lys.rda")
+
+obj <- CreateSeuratObject(
+  counts = matrix,
+  meta.data = meta_updated
+)
+
+obj <- NormalizeData(obj)
+obj <- FindVariableFeatures(obj, selection.method = "vst")
+obj <- ScaleData(obj, features=rownames(obj))
+
+matrix <- as.matrix(obj@assays$RNA$scale.data)
+umi <- data.frame(UMI = obj$nCount_RNA)
+
+meta_updated$UMI <- NA
+meta_updated[meta_updated$TreeID_Cell %in% rownames(umi), "UMI"] <- umi$UMI[rownames(umi) %in% meta_updated$TreeID_Cell]
+
+meta_updated <- meta_updated %>%
+  mutate(
+    channel = case_when(
+      str_detect(TreeID_Cell, "_R$") ~ "R",
+      str_detect(TreeID_Cell, "_Y$") ~ "Y",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  group_by(sister) %>%
+  mutate(
+    umi_R = UMI[channel == "R"][1],
+    umi_Y = UMI[channel == "Y"][1],
+    UMI_pct = if_else(
+      !is.na(umi_R) & !is.na(umi_Y),
+      round(abs(umi_R - umi_Y) / pmax(umi_R, umi_Y) * 100,0),
+      NA_real_
+    )
+    
+  ) %>%
+  ungroup() %>%
+  dplyr::select(-channel, -umi_R, -umi_Y)
+
+save(meta_updated, meta, file="rda/meta_final_Lys.rda")
+
+rm(list=ls())
+gc()
+```
+
+# **PART 10 - Data Visualization**
+
+```{r visual, warning=FALSE, eval=FALSE}
+load("rda/meta_final_Lys.rda")
+load("rda/norm_mat.rda")
+load("rda/targets.rda")
+genes <- genes[genes$BP == "SRF_MRTF",]
+genes <- genes[!duplicated(genes$Genes),]
+
+idx <- match(genes$Genes, rownames(norm))
+norm_sub <- norm[idx, , drop = FALSE]
+norm_sub <- norm_sub[complete.cases(norm_sub), ]
+
+diff_norm <- sapply(1:nrow(meta), function(i) {
+  norm_sub[, meta$cell_A[i]] - norm_sub[, meta$cell_B[i]]
+})
+
+colnames(diff_norm) <- paste0("Sister_", meta$pair)
+rownames(diff_norm) <- rownames(norm_sub)
+
+save(diff_norm, file="rda/diffmat_norm_lys.rda")
+write.table(diff_norm, file = "csv/matrix_diff_norm_mrtf_ord_lys.csv", sep = "\t", row.names = TRUE, quote = FALSE)
+
+rm(norm, norm_sub)
+
+meta_updated <- meta_updated %>%
+  mutate(
+    channel = case_when(
+      str_detect(TreeID_Cell, "_R$") ~ "R",
+      str_detect(TreeID_Cell, "_Y$") ~ "Y",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  group_by(pair) %>%
+  mutate(
+    Lys_R = Lysosome[channel == "R"][1],
+    Lys_Y = Lysosome[channel == "Y"][1],
+    Diff_Lys   = Lys_R-Lys_Y
+  ) %>%
+  ungroup() %>%
+  dplyr::select(-channel, -Lys_R, -Lys_Y)
+```
+
+## Heatmap 
+
+```{r visual-heatmap, warning=FALSE, eval=FALSE}
+load("rda/percent_corr_Lys.rda")
+
+a <- meta_updated[!duplicated(meta_updated$sister),]
+meta <- merge(meta, a[,c("sister","Cycle","Diff_Lys","Sym","UMI_pct","Lysosome")], by.x="sister", by.y="sister")
+rm(a)
+
+meta$Thr <- ""
+meta[(meta$Diff_Lys >= 300000 & meta$Lysosome >= 600000), "Thr"] <- "Asymmetric_Lyso_High"
+meta[(meta$Diff_Lys < 300000 & meta$Lysosome >= 600000), "Thr"] <- "Symmetric_Lyso_High"
+meta[(meta$Diff_Lys < 300000 & meta$Lysosome < 600000), "Thr"] <- "Symmetric_Lyso_Low"
+table(meta$Thr)
+meta$Thr<- factor(meta$Thr, levels = c("Symmetric_Lyso_Low","Symmetric_Lyso_High","Asymmetric_Lyso_High"))
+
+meta2 <- meta[!duplicated(meta$sister), ]
+meta2 <- meta2[order(meta2$Diff_Lys), ]
+sis_order <- as.character(meta2$sister)
+meta2$sister <- factor(meta2$sister, levels = sis_order)
+meta2 <- meta2[order(meta2$sister), ]
+
+meta$sister <- factor(meta$sister, levels = sis_order)
+meta <- meta[order(meta$sister),]
+
+diff_norm <- diff_norm[, match(sis_order, colnames(diff_norm)), drop = FALSE]
+
+# Percentage
+perc$check <- as.character(perc$check)
+perc$sister <- factor(perc$sister, levels = sis_order)
+perc <- perc[order(perc$sister),]
+
+diff_norm <- diff_norm[, match(sis_order, colnames(diff_norm)), drop = FALSE]
+
+# Creating Histogram
+bar_colors <- c(
+  "Negative" = "blue",
+  "No diff" = "gray85",
+  "Positive" = "red3"
+)
+
+sym_colors <- c(
+  "Asymmetric (positive_corr)" = "red",
+  "Symmetric" = "black"
+)
+
+ha_line <- HeatmapAnnotation(
+  "Lysosome_Symmetry" = anno_lines(
+    meta2$Diff_Lys,
+    gp = gpar(col = "black", lwd = 1),
+    add_points = TRUE,
+    pt_gp = gpar(
+      col = dplyr::case_when(
+        meta2$Thr %in% "Asymmetric_Lyso_High" ~ "red",
+        meta2$Thr %in% "Symmetric_Lyso_High" ~ "blue",
+        meta2$Thr %in% "Symmetric_Lyso_Low" ~ "black"
+      )
+    ),
+    smooth = FALSE,
+    height = unit(3, "cm"),
+    axis_param = list(
+      side = "left",
+      gp = gpar(fontsize = 6),
+      labels_rot = 0
+    )
+  ),
+  show_annotation_name = TRUE,
+  annotation_name_side = "left",
+  annotation_name_gp = gpar(fontsize = 8, fontface = "bold"),
+  annotation_height = unit(3, "cm")
+)
+
+perc_wide <- perc %>%
+  dplyr::select(sister, check, Percentage) %>%
+  tidyr::pivot_wider(
+    names_from = check,
+    values_from = Percentage,
+    values_fill = 0
+  )
+
+bar_mat <- as.matrix(perc_wide[, c("Negative", "No diff", "Positive")])
+
+ha_bar <- HeatmapAnnotation(
+  "Percentage"= anno_barplot(
+    bar_mat,
+    gp = gpar(fill = unname(bar_colors[colnames(bar_mat)]), col = "black"),
+    border = FALSE,
+    bar_width = 1,
+    height = unit(3, "cm"),
+    axis_param = list(
+      side = "left",
+      gp = gpar(fontsize = 6),
+      labels_rot = 0
+    )
+  ),
+  show_annotation_name = TRUE,
+  annotation_name_side = "left",
+  annotation_name_gp = gpar(fontsize = 8, fontface = "bold"),
+  annotation_height = unit(3, "cm")
+)
+
+hax <- c(ha_line, ha_bar)
+
+heat <- Heatmap(diff_norm,                    
+                name = "z-score",
+                show_column_names = TRUE,
+                column_names_side = "top",
+                column_names_rot = 90,                    
+                column_names_gp  = gpar(fontsize = 4), 
+                column_title = NULL,
+                cluster_columns = FALSE,
+                show_column_dend = TRUE,
+                show_row_names = TRUE,
+                row_labels = rownames(diff_norm),
+                row_names_gp = gpar(fontsize = 5),
+                row_title = NULL,
+                cluster_rows = TRUE,
+                show_row_dend = TRUE,
+                top_annotation = hax,
+                border = TRUE)
+
+png("plots/Heatmap_ord_Lys_SRF_MRTF.png", width = 14, height = 12, units = "in", res = 300)
+draw(heat)
+dev.off()
+
+save(meta,meta_updated, file="rda/meta_final_Lys.rda")
+
+rm(list=ls())
+```
+
+## Quantification
+
+```{r visual-quantif, warning=FALSE, eval=FALSE}
+load("rda/meta_final_Lys.rda")
+load("rda/norm_mat.rda")
+load("rda/percent_corr_Lys.rda")
+load("rda/targets.rda")
+
+# Daughters 1
+meta1 <- meta_updated[meta_updated$TreeID_Cell %in% meta$cell_A,]
+meta1 <- merge(meta1, meta[,c("cell_A","Thr")], by.x="TreeID_Cell", by.y="cell_A")
+norm1 <- norm[, colnames(norm) %in% meta1$TreeID_Cell]
+dim(norm1)
+
+# Daughters 2
+meta2 <- meta_updated[meta_updated$TreeID_Cell %in% meta$cell_B,]
+meta2 <- merge(meta2, meta[,c("cell_B","Thr")], by.x="TreeID_Cell", by.y="cell_B")
+norm2 <- norm[, colnames(norm) %in% meta2$TreeID_Cell]
+dim(norm2)
+
+save(meta1, meta2, meta, norm, meta_updated, file="rda/degs_last.rda")
+
+# Boxplot 1
+a <- meta1[,c(1,2,6,15,16)]
+a$cell <- "Daughter1"
+
+b <- meta2[,c(1,2,6,15,16)]
+b$cell <- "Daughter2"
+
+merge <- rbind(a,b)
+
+merge <- merge[!duplicated(merge$TreeID_Cell),]
+
+colors <- c(
+  "Symmetric_Lyso_Low" = "black",
+  "Symmetric_Lyso_High" = "blue",
+  "Asymmetric_Lyso_High" = "red3"
+)
+
+p <- ggplot(
+  data = merge,
+  aes(x = Thr, y = Lysosome, colour = Thr)) +
+  geom_boxplot(
+    position = position_dodge(width = 1.5),
+    outlier.shape = 17,
+    outlier.size = 1.2) +
+  geom_jitter(width = 0.2, size = 1.2) +
+  scale_colour_manual(values = colors, name = NULL) +
+  facet_wrap(~ cell) +
+  stat_boxplot(aes(Thr, Lysosome), geom = 'errorbar', linetype = 1, width = 0.3) + 
+  stat_summary(aes(group = Thr), fun = mean, geom = "point", 
+               size = 1.5, position = position_dodge(width = 0.75)) + 
+  labs(title = "Distribution of Lysosomal Symmetry per Daughter",
+       x = "",
+       y = "Lysosome Intensity") +
+  theme_bw() +
+  theme(
+    axis.title.y = element_text(size = 8.5, color = "black", face = "bold"),
+    axis.title.x = element_blank(),
+    axis.text.y = element_text(size = 9.5, color="black"), 
+    axis.text.x = element_text(size = 8.5, hjust = 1,face = "bold", color="black", angle = 45), 
+    legend.position = "none",
+    strip.text = element_text(size = 10.5, face = "bold"),
+    axis.ticks.x = element_blank(),
+    panel.grid.major = element_line(color = "white"),
+    panel.grid.minor = element_line(color = "white")
+  )
+
+ggsave("plots/Boxplot_Norm_Daughters_Lys_SRF_MRTF.png",p, height=5.4, width=7.2, dpi=300)
+
+write.csv(merge, "csv/Boxplot_Norm_Daughters_Lys_SRF_MRTF.csv", row.names = FALSE)
+
+# Anno Point
+plot <- merge[merge$cell == "Daughter1",]
+
+p <- ggplot(plot, aes(x = Lysosome, y = abs(Diff_Lys), colour = Thr)) +
+  geom_point(size = 2, alpha = 0.8) +
+  scale_colour_manual(values = colors, name = NULL) +
+  labs(
+    title = "Absolute Lyso Difference vs. Lyso Intensity of Daughter with More Lyso",
+    x = "Lyso intensity of daughter with more Lyso",
+    y = "Absolute Lyso difference per daughter pair"
+  ) +
+  geom_hline(yintercept = 300000, linetype="dashed") +
+  geom_vline(xintercept = 600000, linetype="dashed") +
+  theme_bw() +
+  theme(
+    axis.title.y = element_text(size = 8.5, color = "black", face = "bold"),
+    axis.title.x = element_text(size = 8.5, color = "black", face = "bold"),
+    axis.text.y = element_text(size = 9.5, color = "black"),
+    axis.text.x = element_text(size = 8.5, color = "black"),
+    legend.position = "right",
+    panel.grid.major = element_line(color = "white"),
+    panel.grid.minor = element_line(color = "white"))
+
+ggsave("plots/Anno_Norm_Daughters_Lys_SRF_MRTF.png",p, height=5.4, width=7.2, dpi=300)
+
+write.csv(plot, "csv/Anno_Norm_Daughters_Lys_SRF_MRTF.csv", row.names = FALSE)
+
+# Boxplot 2
+load("rda/diffmat_norm_lys.rda")
+
+df_long <- as.data.frame(diff_norm) %>%
+  tibble::rownames_to_column("Gene") %>%
+  pivot_longer(-Gene, names_to = "sister", values_to = "value") %>%
+  left_join(plot[, c("sister", "Thr")], by = "sister")
+
+p <- ggplot(df_long, aes(x = Thr, y = value, fill = Thr)) +
+  geom_boxplot(outlier.size = 0.5) +
+  scale_fill_manual(values = colors, name = NULL) +
+  facet_wrap(~ Gene, scales = "free_y") +
+  theme_bw() +
+  labs(
+    title = "Expression of SRF/MRTF Target Genes Across Lysosome Inheritance Classes",
+    x = "",
+    y = "Normalized expression (z-score)"
+  ) +
+  theme(
+    axis.title.y = element_text(size = 8.5, color = "black", face = "bold"),
+    axis.title.x = element_blank(),
+    axis.text.y = element_text(size = 9.5, color = "black"),
+    axis.text.x = element_text(size = 8.5, color = "black", angle=45, hjust=1),
+    legend.position = "none",
+    panel.grid.major = element_line(color = "white"),
+    panel.grid.minor = element_line(color = "white"))
+
+ggsave("plots/Boxplot_Norm_Lys_SRF_MRTF_Genes.png",p, height=8, width=12, dpi=300)
+
+write.csv(df_long, "csv/Boxplot_Norm_Lys_SRF_MRTF_Genes.csv", row.names = FALSE)
+
+# PCA
+pca <- prcomp(t(diff_norm), scale. = TRUE)
+
+pca_df <- data.frame(
+  PC1 = pca$x[,1],
+  PC2 = pca$x[,2],
+  Thr = plot$Thr
+)
+
+p <- ggplot(pca_df, aes(PC1, PC2, color = Thr)) +
+  geom_point(size = 2) +
+  scale_color_manual(values = colors, name = NULL) +
+  theme_classic()
+
+ggsave("plots/PCA_Norm_Lys_SRF_MRTF_Genes.png",p, height=5.4, width=7.2, dpi=300)
+
+write.csv(pca_df, "csv/PCA_Norm_Lys_SRF_MRTF_Genes.csv", row.names = TRUE)
+
+# Correlation Barplot
+cor_vals <- apply(diff_norm, 1, function(gene_expr) {
+  cor(gene_expr, plot$Diff_Lys, use = "complete.obs")
+})
+
+png("plots/Barplot_Norm_Lys_SRF_MRTF_Genes.png",height = 5.4, width = 8, units = "in", res = 300)
+barplot(
+  sort(cor_vals),
+  las = 2,
+  main = "Correlation of SRF_MRTF Gene Expression with Lysosome Asymmetry",
+  ylab = "Correlation coefficient",
+  col = "grey")
+dev.off()
+
+# Correlation Dotplot
+thr_mat <- model.matrix(~ Thr - 1, data = meta)
+colnames(thr_mat)
+
+cor_mat <- apply(diff_norm, 1, function(gene_expr) {
+  apply(thr_mat, 2, function(cond) {
+    cor(gene_expr, cond, method = "spearman", use = "complete.obs")
+  })
+})
+
+cor_mat <- t(cor_mat)
+
+pvals <- apply(diff_norm, 1, function(gene_expr) {
+  sapply(levels(meta$Thr), function(cond) {
+    group <- meta$Thr == cond
+    wilcox.test(gene_expr[group], gene_expr[!group])$p.value
+  })
+})
+
+pvals <- t(pvals)
+
+pval_adj <- apply(pvals, 2, p.adjust, method = "BH")
+
+colnames(cor_mat) <- c("Symmetric_Lyso_Low","Symmetric_Lyso_High","Asymmetric_Lyso_High")
+
+cor_long <- cor_mat %>%
+  as.data.frame() %>%
+  rownames_to_column("Gene") %>%
+  pivot_longer(
+    cols = -Gene,
+    names_to = "Condition",
+    values_to = "Correlation"
+  )
+
+pval_long <- pval_adj %>%
+  as.data.frame() %>%
+  rownames_to_column("Gene") %>%
+  pivot_longer(
+    cols = -Gene,
+    names_to = "Condition",
+    values_to = "p_adj"
+  )
+
+cor_df <- left_join(cor_long, pval_long,
+                    by = c("Gene", "Condition"))
+
+cor_df <- cor_df %>%
+  mutate(Significant = p_adj < 0.05)
+
+cor_df$Condition <- factor(cor_df$Condition, levels = c("Symmetric_Lyso_Low","Symmetric_Lyso_High","Asymmetric_Lyso_High"))
+
+p <- ggplot(cor_df, aes(x = Condition, y = Gene)) +
+  geom_point(
+    aes(
+      size = abs(Correlation),
+      color = Correlation,
+      shape = Significant),
+    stroke = 1) +
+  scale_shape_manual(
+    values = c(`TRUE` = 4, `FALSE` = 16),
+    labels = c(`TRUE` = "FDR < 0.05",
+               `FALSE` = "Not significant")) +
+  scale_color_gradient2(
+    low = "blue", mid = "white", high = "red") +
+  theme_minimal() +
+  labs(
+    x = "",
+    y = "",
+    title = "Gene–Condition Associations",
+    size = "|Spearman r|", 
+    color = "Spearman r", 
+    shape = "")
+
+ggsave("plots/Dotplot_Norm_Lys_SRF_MRTF_Genes.png",p, height=6, width=8, dpi=300)
+
+write.csv(cor_df, "csv/Dotplot_Norm_Lys_SRF_MRTF_Genes.csv", row.names = FALSE)
+
+rm(list=ls())
+gc()
+```
+
+# **PART 11 - Diffentially Expressed Genes**
+
+```{r degs, warning=FALSE, eval=FALSE}
+load("rda/diffmat_norm_lys.rda")
+load("rda/degs_last.rda")
+rm(meta1, meta2)
+
+sister <- unique(meta_updated$sister)
+
+meta$sister <- factor(meta$sister, levels = sister)
+meta <- meta[order(meta$sister),]
+
+diff_norm <- sapply(1:nrow(meta), function(i) {
+  norm[, meta$cell_A[i]] - norm[, meta$cell_B[i]]
+})
+
+colnames(diff_norm) <- meta$sister
+```
+
+## Symmetric Lyso Low vs. Symmetric Lyso High
+
+```{r symlow_symhigh, warning=FALSE, eval=FALSE}
+deg_results <- apply(diff_norm, 1, function(gene_expr) {
+  group1 <- gene_expr[meta$Thr == "Symmetric_Lyso_Low"]
+  group2 <- gene_expr[meta$Thr == "Symmetric_Lyso_High"]
+  
+  test <- wilcox.test(group1, group2)
+  
+  c(
+    p_value = test$p.value,
+    logFC = mean(group2, na.rm = TRUE) - mean(group1, na.rm = TRUE)
+  )
+}) 
+
+deg_results <- as.data.frame(t(deg_results))
+deg_results$gene <- rownames(deg_results)
+deg_results <- na.omit(deg_results)
+
+# Adjust p-values
+deg_results$padj <- p.adjust(deg_results$p_value, method = "fdr")
+
+# Order
+plot_volcano <- function(results, title = "DEGs (Sym High - Sym Low)") {
+  results <- deg_results %>% filter(!is.na(logFC), !is.na(padj))
+  
+  results <- results %>%
+    mutate(
+      neg_log10_p = -log10(p_value),
+      color = case_when(
+        p_value <= 0.05 & logFC > 0 ~ "Up in Symmetric Lyso High",
+        p_value <= 0.05 & logFC < 0 ~ "Down in Symmetric Lyso High",
+        TRUE ~ "ns"),
+      color = factor(color, 
+                     levels = c("Up in Symmetric Lyso High", "Down in Symmetric Lyso High", "ns")))
+  
+  # Top 10 up and down by logFC
+  top_up <- results %>%
+    filter(color == "Up in Symmetric Lyso High") %>%
+    mutate(score = -log10(p_value) * logFC) %>%
+    slice_max(order_by = score, n = 20)
+  
+  top_down <- results %>%
+    filter(color == "Down in Symmetric Lyso High") %>%
+    mutate(score = -log10(p_value) * abs(logFC)) %>%
+    slice_max(order_by = score, n = 20)
+  
+  ggplot(results, aes(x = logFC, y = neg_log10_p, color = color)) +
+    geom_point(alpha = 0.6, size = 1) +
+    geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "red3") +
+    geom_label_repel(
+      data = top_up,
+      aes(label = gene),
+      color = "black",
+      fill = "white",
+      label.size = 0.2,
+      size = 2.5,
+      box.padding = 0.4,
+      point.padding = 0.3,
+      max.overlaps = Inf) +
+    geom_label_repel(
+      data = top_down,
+      aes(label = gene),
+      color = "black",
+      fill = "white",
+      label.size = 0.2,
+      size = 2.5,
+      box.padding = 0.4,
+      point.padding = 0.3,
+      max.overlaps = Inf) +
+    scale_color_manual(values = c(
+      "Up in Symmetric Lyso High" = "red",
+      "Down in Symmetric Lyso High" = "blue",
+      "ns" = "gray60")) +
+    labs(
+      x = "log2 fold change",
+      y = "-log10(pvalue)",
+      title = title,
+      color = NULL) +
+    theme_minimal() + 
+    theme(
+      panel.background = element_rect(fill = "white"),
+      plot.background = element_rect(fill = "white"),
+      panel.grid.major = element_line(color = "grey80"),
+      panel.grid.minor = element_line(color = "grey90"))
+}
+
+volcano_plot <- plot_volcano(de_results)
+
+ggsave("plots/DEGs_SymLow_SymHigh.png", volcano_plot, width = 8, height = 6, dpi = 300)
+
+write.csv(deg_results, "csv/DEGs_SymLow_SymHigh.csv", row.names = TRUE)
+```
+
+## Symmetric Lyso Low vs. Asymmetric Lyso High
+
+```{r symlow_asymhigh, warning=FALSE, eval=FALSE}
+deg_results <- apply(diff_norm, 1, function(gene_expr) {
+  group1 <- gene_expr[meta$Thr == "Symmetric_Lyso_Low"]
+  group2 <- gene_expr[meta$Thr == "Asymmetric_Lyso_High"]
+  
+  test <- wilcox.test(group1, group2)
+  
+  c(
+    p_value = test$p.value,
+    logFC = mean(group2, na.rm = TRUE) - mean(group1, na.rm = TRUE)
+  )
+}) 
+
+deg_results <- as.data.frame(t(deg_results))
+deg_results$gene <- rownames(deg_results)
+deg_results <- na.omit(deg_results)
+
+# Adjust p-values
+deg_results$padj <- p.adjust(deg_results$p_value, method = "fdr")
+
+plot_volcano <- function(results, title = "DEGs (Asym High - Sym Low)") {
+  results <- deg_results %>% filter(!is.na(logFC), !is.na(padj))
+  
+  results <- results %>%
+    mutate(
+      neg_log10_p = -log10(p_value),
+      color = case_when(
+        p_value <= 0.05 & logFC > 0 ~ "Up in Asymmetric Lyso High",
+        p_value <= 0.05 & logFC < 0 ~ "Down in Asymmetric Lyso High",
+        TRUE ~ "ns"),
+      color = factor(color, 
+                     levels = c("Up in Asymmetric Lyso High", "Down in Asymmetric Lyso High", "ns")))
+  
+  # Top 10 up and down by logFC
+  top_up <- results %>%
+    filter(color == "Up in Asymmetric Lyso High") %>%
+    mutate(score = -log10(p_value) * logFC) %>%
+    slice_max(order_by = score, n = 20)
+  
+  top_down <- results %>%
+    filter(color == "Down in Asymmetric Lyso High") %>%
+    mutate(score = -log10(p_value) * abs(logFC)) %>%
+    slice_max(order_by = score, n = 20)
+  
+  ggplot(results, aes(x = logFC, y = neg_log10_p, color = color)) +
+    geom_point(alpha = 0.6, size = 1) +
+    geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "red3") +
+    geom_label_repel(
+      data = top_up,
+      aes(label = gene),
+      color = "black",
+      fill = "white",
+      label.size = 0.2,
+      size = 2.5,
+      box.padding = 0.4,
+      point.padding = 0.3,
+      max.overlaps = Inf) +
+    geom_label_repel(
+      data = top_down,
+      aes(label = gene),
+      color = "black",
+      fill = "white",
+      label.size = 0.2,
+      size = 2.5,
+      box.padding = 0.4,
+      point.padding = 0.3,
+      max.overlaps = Inf) +
+    scale_color_manual(values = c(
+      "Up in Asymmetric Lyso High" = "red",
+      "Down in Asymmetric Lyso High" = "blue",
+      "ns" = "gray60")) +
+    labs(
+      x = "log2 fold change",
+      y = "-log10(pvalue)",
+      title = title,
+      color = NULL) +
+    theme_minimal() + 
+    theme(
+      panel.background = element_rect(fill = "white"),
+      plot.background = element_rect(fill = "white"),
+      panel.grid.major = element_line(color = "grey80"),
+      panel.grid.minor = element_line(color = "grey90"))
+}
+
+volcano_plot <- plot_volcano(de_results)
+
+ggsave("plots/DEGs_SymLow_AsymHigh.png", volcano_plot, width = 8, height = 6, dpi = 300)
+
+write.csv(deg_results, "csv/DEGs_SymLow_AsymHigh.csv", row.names = TRUE)
+```
+
+## Symmetric Lyso High vs. Asymmetric Lyso High
+
+```{r symhigh_asymhigh, warning=FALSE, eval=FALSE}
+deg_results <- apply(diff_norm, 1, function(gene_expr) {
+  group1 <- gene_expr[meta$Thr == "Symmetric_Lyso_High"]
+  group2 <- gene_expr[meta$Thr == "Asymmetric_Lyso_High"]
+  
+  test <- wilcox.test(group1, group2)
+  
+  c(
+    p_value = test$p.value,
+    logFC = mean(group2, na.rm = TRUE) - mean(group1, na.rm = TRUE)
+  )
+}) 
+
+deg_results <- as.data.frame(t(deg_results))
+deg_results$gene <- rownames(deg_results)
+deg_results <- na.omit(deg_results)
+
+# Adjust p-values
+deg_results$padj <- p.adjust(deg_results$p_value, method = "fdr")
+
+plot_volcano <- function(results, title = "DEGs (Asym High - Sym High)") {
+  results <- deg_results %>% filter(!is.na(logFC), !is.na(padj))
+  
+  results <- results %>%
+    mutate(
+      neg_log10_p = -log10(p_value),
+      color = case_when(
+        p_value <= 0.05 & logFC > 0 ~ "Up in Asymmetric Lyso High",
+        p_value <= 0.05 & logFC < 0 ~ "Down in Asymmetric Lyso High",
+        TRUE ~ "ns"),
+      color = factor(color, 
+                     levels = c("Up in Asymmetric Lyso High", "Down in Asymmetric Lyso High", "ns")))
+  
+  # Top 10 up and down by logFC
+  top_up <- results %>%
+    filter(color == "Up in Asymmetric Lyso High") %>%
+    mutate(score = -log10(p_value) * logFC) %>%
+    slice_max(order_by = score, n = 20)
+  
+  top_down <- results %>%
+    filter(color == "Down in Asymmetric Lyso High") %>%
+    mutate(score = -log10(p_value) * abs(logFC)) %>%
+    slice_max(order_by = score, n = 20)
+  
+  ggplot(results, aes(x = logFC, y = neg_log10_p, color = color)) +
+    geom_point(alpha = 0.6, size = 1) +
+    geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "red3") +
+    geom_label_repel(
+      data = top_up,
+      aes(label = gene),
+      color = "black",
+      fill = "white",
+      label.size = 0.2,
+      size = 2.5,
+      box.padding = 0.4,
+      point.padding = 0.3,
+      max.overlaps = Inf) +
+    geom_label_repel(
+      data = top_down,
+      aes(label = gene),
+      color = "black",
+      fill = "white",
+      label.size = 0.2,
+      size = 2.5,
+      box.padding = 0.4,
+      point.padding = 0.3,
+      max.overlaps = Inf) +
+    scale_color_manual(values = c(
+      "Up in Asymmetric Lyso High" = "red",
+      "Down in Asymmetric Lyso High" = "blue",
+      "ns" = "gray60")) +
+    labs(
+      x = "log2 fold change",
+      y = "-log10(pvalue)",
+      title = title,
+      color = NULL) +
+    theme_minimal() + 
+    theme(
+      panel.background = element_rect(fill = "white"),
+      plot.background = element_rect(fill = "white"),
+      panel.grid.major = element_line(color = "grey80"),
+      panel.grid.minor = element_line(color = "grey90"))
+}
+
+volcano_plot <- plot_volcano(de_results)
+
+ggsave("plots/DEGs_SymHigh_AsymHigh.png", volcano_plot, width = 8, height = 6, dpi = 300)
+
+write.csv(deg_results, "csv/DEGs_SymHigh_AsymHigh.csv", row.names = TRUE)
+```
+
+# **PART 12 - Session Information**
+
+```{r Session-Info, warning=FALSE, eval=FALSE}
+sessionInfo()
+R.version
+```
