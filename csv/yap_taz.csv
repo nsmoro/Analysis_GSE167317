@@ -1,0 +1,26 @@
+Gene,Pathway,HSPC Relevance,Status
+Ctgf,YAP_TAZ,Some,Reported
+Cyr61,YAP_TAZ,Some,Reported
+Ankrd1,YAP_TAZ,Low,Reported
+Amotl2,YAP_TAZ,Some,Reported
+Birc5,YAP_TAZ,High,Reported
+Myc,YAP_TAZ,High,Reported
+Mki67,YAP_TAZ,High,Reported
+Areg,YAP_TAZ,Some,Reported
+Sox4,YAP_TAZ,Moderate,Reported
+Itgb2,YAP_TAZ,Moderate,Reported
+Il7r,YAP_TAZ,Some,Reported
+Kit,YAP_TAZ,High,Reported
+Ccnd1,YAP_TAZ,Moderate,Speculative
+Ccnd2,YAP_TAZ,High,Speculative
+Foxm1,YAP_TAZ,Moderate,Speculative
+Ezh2,YAP_TAZ,High,Speculative
+Bcl2,YAP_TAZ,Moderate,Speculative
+Mcl1,YAP_TAZ,High,Speculative
+Cxcr4,YAP_TAZ,High,Speculative
+Sell,YAP_TAZ,Some,Speculative
+Cd44,YAP_TAZ,Some,Speculative
+Gata2,YAP_TAZ,High,Speculative
+Meis1,YAP_TAZ,High,Speculative
+Spi1,YAP_TAZ,Moderate,Speculative
+Socs3,YAP_TAZ,Moderate,Speculative
