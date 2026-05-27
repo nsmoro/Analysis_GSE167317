@@ -1895,7 +1895,176 @@ ggsave("plots/DEGs_SymHigh_AsymHigh.png", volcano_plot, width = 8, height = 6, d
 write.csv(deg_results, "csv/DEGs_SymHigh_AsymHigh.csv", row.names = TRUE)
 ```
 
-# **PART 12 - Session Information**
+# **PART 12 - Reported & Speculative Genes**
+
+```{r rep-spec, warning=FALSE, eval=FALSE}
+yap <- read.csv("csv/yap_taz.csv")
+srfs <- read.csv("csv/srfs.csv")
+load("rda/meta_final_Lys.rda")
+load("rda/norm_mat.rda")
+
+genes <- rbind(srfs, yap)
+genes <- genes[!duplicated(genes$Gene),]
+
+spec <- genes[genes$Status == "Speculative",]
+spec <- spec[!spec$Pathway %in% c("Both","Indirect"),]
+spec$HSPC.Relevance <- factor(spec$HSPC.Relevance, levels = c("Low","Moderate","High","Some"))
+
+rep <- genes[genes$Status == "Reported",]
+rep[rep$Pathway %in% "Both", "Pathway"] <- "SRF_MRTF/SRF_TCF"
+rep[rep$Pathway %in% "Indirect", "Pathway"] <- "Indirect_SRFs"
+rep$HSPC.Relevance <- factor(rep$HSPC.Relevance, levels = c("Low","Moderate","Moderate_High","High","Some"))
+
+# Reported
+idx <- match(rep$Gene, rownames(norm))
+norm_sub <- norm[idx, , drop = FALSE]
+norm_sub <- norm_sub[complete.cases(norm_sub), ]
+
+diff_norm <- sapply(1:nrow(meta), function(i) {
+  norm_sub[, meta$cell_A[i]] - norm_sub[, meta$cell_B[i]]
+})
+
+colnames(diff_norm) <- paste0("Sister_", meta$pair)
+rownames(diff_norm) <- rownames(norm_sub)
+
+df_long <- as.data.frame(diff_norm) %>%
+  tibble::rownames_to_column("Gene") %>%
+  pivot_longer(-Gene, names_to = "sister", values_to = "value") %>%
+  left_join(meta[, c("sister", "Thr")], by = "sister") %>%
+  left_join(
+    rep[, c("Gene", "Pathway", "HSPC.Relevance")],
+    by = "Gene"
+  )
+
+colors <- c(
+  "Symmetric_Lyso_Low" = "black",
+  "Symmetric_Lyso_High" = "blue",
+  "Asymmetric_Lyso_High" = "red3"
+)
+
+pathways <- unique(rep$Pathway)
+
+for (pw in pathways) {
+  
+  df_pw <- df_long %>%
+    filter(Pathway == pw)
+  
+  png(
+  filename = paste0(
+    "plots/",
+    "Boxplot_Norm_Lys_Reported_",
+    gsub("[^A-Za-z0-9]", "_", pw),
+    ".png"
+  ),
+  width = 12,
+  height = 8,
+  units = "in",
+  res = 300
+)
+  p <- ggplot(df_pw, aes(x = Thr, y = value, fill = Thr)) +
+    geom_boxplot(outlier.size = 0.5) +
+    scale_fill_manual(values = colors, name = NULL) +
+    facet_grid(
+      HSPC.Relevance ~ Gene,
+      scales = "free_y"
+    ) +
+    theme_bw() +
+    labs(
+      title = pw,
+      subtitle = "Known/Reported Targets",
+      x = NULL,
+      y = "Normalized expression (z-score)"
+    ) +
+    theme(
+      plot.title = element_text(face = "bold", size = 12, hjust = 0.5),
+      axis.text.x = element_text(size = 8.5, angle = 45, hjust = 1),
+      axis.text.y = element_text(size = 9),
+      strip.text = element_text(size = 10, face = "bold"),
+      legend.position = "none",
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank()
+    )
+  
+  print(p)
+  dev.off()
+}
+
+# Speculative
+idx <- match(spec$Gene, rownames(norm))
+norm_sub <- norm[idx, , drop = FALSE]
+norm_sub <- norm_sub[complete.cases(norm_sub), ]
+
+diff_norm <- sapply(1:nrow(meta), function(i) {
+  norm_sub[, meta$cell_A[i]] - norm_sub[, meta$cell_B[i]]
+})
+
+colnames(diff_norm) <- paste0("Sister_", meta$pair)
+rownames(diff_norm) <- rownames(norm_sub)
+
+df_long <- as.data.frame(diff_norm) %>%
+  tibble::rownames_to_column("Gene") %>%
+  pivot_longer(-Gene, names_to = "sister", values_to = "value") %>%
+  left_join(meta[, c("sister", "Thr")], by = "sister") %>%
+  left_join(
+    spec[, c("Gene", "Pathway", "HSPC.Relevance")],
+    by = "Gene"
+  )
+
+colors <- c(
+  "Symmetric_Lyso_Low" = "black",
+  "Symmetric_Lyso_High" = "blue",
+  "Asymmetric_Lyso_High" = "red3"
+)
+
+pathways <- unique(spec$Pathway)
+
+for (pw in pathways) {
+  
+  df_pw <- df_long %>%
+    filter(Pathway == pw)
+  
+  png(
+  filename = paste0(
+    "plots/",
+    "Boxplot_Norm_Lys_Speculative_",
+    gsub("[^A-Za-z0-9]", "_", pw),
+    ".png"
+  ),
+  width = 12,
+  height = 8,
+  units = "in",
+  res = 300
+)
+  p <- ggplot(df_pw, aes(x = Thr, y = value, fill = Thr)) +
+    geom_boxplot(outlier.size = 0.5) +
+    scale_fill_manual(values = colors, name = NULL) +
+    facet_grid(
+      HSPC.Relevance ~ Gene,
+      scales = "free_y"
+    ) +
+    theme_bw() +
+    labs(
+      title = pw,
+      subtitle = "Speculative Targets",
+      x = NULL,
+      y = "Normalized expression (z-score)"
+    ) +
+    theme(
+      plot.title = element_text(face = "bold", size = 12, hjust = 0.5),
+      axis.text.x = element_text(size = 8.5, angle = 45, hjust = 1),
+      axis.text.y = element_text(size = 9),
+      strip.text = element_text(size = 10, face = "bold"),
+      legend.position = "none",
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank()
+    )
+  
+  print(p)
+  dev.off()
+}
+```
+
+# **PART 13 - Session Information**
 
 ```{r Session-Info, warning=FALSE, eval=FALSE}
 sessionInfo()
