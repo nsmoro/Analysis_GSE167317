@@ -2,7 +2,7 @@
 title: "Analysis_GSE167317"
 subtitle: "Dataset: Quantitative Time-Lapse Imaging & scRNA-Seq"
 author: "Natalia Silva Morosini"
-date: "`r format(Sys.Date(), '%B %d, %Y')`"
+date: "May 27, 2026"
 output:
   html_document:
     toc: true
@@ -2066,7 +2066,7 @@ for (pw in pathways) {
 
 # **PART 13 - Session Information**
 
-```{r Session-Info, warning=FALSE, eval=FALSE}
+```{r Session-Info, warning=FALSE}
 sessionInfo()
 R.version
 ```
