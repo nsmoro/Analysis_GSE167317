@@ -2,7 +2,7 @@
 title: "Analysis_GSE167317"
 subtitle: "Dataset: Quantitative Time-Lapse Imaging & scRNA-Seq"
 author: "Natalia Silva Morosini"
-date: "May 27, 2026"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
 output:
   html_document:
     toc: true
