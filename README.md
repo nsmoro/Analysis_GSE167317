@@ -11,8 +11,10 @@ The code necessary to reproduce all findings described in the paper is available
 
 The primary deliverable is a rendered R Markdown report:
 
-GSE167317_code.html – rendered analysis report (recommended starting point)
-GSE167317_code.Rmd – R Markdown source containing all code and narrative
+GSE167317_code.html – rendered analysis report (recommended starting point).
+
+GSE167317_code.Rmd – R Markdown source containing all code and narrative.
+
 Please open the GSE167317_code.html file in a web browser to view the full analysis.
 
 All data and repositories are stored in "Z:\home\common\Data\NM\Analysis_GSE167317"
@@ -49,6 +51,16 @@ are fully reproducible from the provided R Markdown document.
 ## Required Files
 
 Download required files from: https://www.gencodegenes.org/mouse/release_M21.html
+
+------------------------------------------------------------
+
+## Package Versions
+
+All R package versions used in this project are recorded using:
+
+sessionInfo()
+
+Please check the GSE167317_code.html file in this repository to see the exact versions.
 
 ------------------------------------------------------------
 
